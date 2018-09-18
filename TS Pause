@@ -1,0 +1,1 @@
+powershell.exe -command (new-object -ComObject Microsoft.SMS.TsProgressUI).CloseProgressDialog() ; (new-object -ComObject wscript.shell).Popup('TS Paused for Testing.',0,'Pause',0x0 + 0x30) ; Exit 0
