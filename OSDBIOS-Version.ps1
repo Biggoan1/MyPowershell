@@ -48,4 +48,4 @@ $OSDBIOSVersion = Get-CimInstance -ClassName Win32_BIOS | Select-Object -ExpandP
 $TSEnvironment.Value("SMSTSBiosVersion") = $OSDBIOSVersion 
 
 # Exit script. 
-exit 1
+exit 0
