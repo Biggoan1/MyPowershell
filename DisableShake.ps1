@@ -1,0 +1,1 @@
+New-ItemProperty HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced -name DisallowShaking -Type dword -Value 1 
