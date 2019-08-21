@@ -1,0 +1,1 @@
+Get-WmiObject Win32_PnPSignedDriver| select DeviceName, DriverVersion, Manufacturer | where {$_.DeviceName -like "*Intel*"}
