@@ -277,25 +277,35 @@ try {
         }
     }
 
-    # ----- Phase 2b: OpenSSH Server (sshd) + jumpbox key -----
+    # ----- Phase 2b: OpenSSH Server (winget Win32-OpenSSH, not the slow WU FoD) + jumpbox key -----
     if ($ConfigureOpenSSH) {
         Write-Host "`n=== Phase 2b: OpenSSH Server ===" -ForegroundColor White
-        if ((Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0').State -ne 'Installed') {
-            Write-Host '  installing OpenSSH.Server capability (from Windows Update) ...'
-            Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null
+        # winget's Win32-OpenSSH downloads from GitHub (fast) and needs NO reboot, unlike the
+        # OpenSSH.Server FoD which pulls from Windows Update and stages for a restart.
+        Write-Host '  installing Microsoft.OpenSSH.Beta via winget ...'
+        & $WingetPath install --id Microsoft.OpenSSH.Beta -e --silent --source winget `
+            --accept-package-agreements --accept-source-agreements
+        # winget lays down the binaries but does NOT register the service - run install-sshd.ps1.
+        $sshdSetup = Join-Path $env:ProgramFiles 'OpenSSH\install-sshd.ps1'
+        if (Test-Path $sshdSetup) {
+            & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $sshdSetup | Out-Null
+            Write-Host '  sshd service registered (install-sshd.ps1)' -ForegroundColor Green
+        } else {
+            Write-Host '  install-sshd.ps1 not found - winget OpenSSH install may have failed.' -ForegroundColor Yellow
         }
         Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
         # default shell -> Windows PowerShell
         New-Item -Path 'HKLM:\SOFTWARE\OpenSSH' -Force | Out-Null
         New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell `
             -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -PropertyType String -Force | Out-Null
-        # firewall
+        # firewall (the winget build may not add one)
         if (-not (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue)) {
             New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' `
                 -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
         }
         Set-NetFirewallRule -DisplayName 'OpenSSH SSH Server (sshd)' -Profile Any -ErrorAction SilentlyContinue
         Start-Service sshd -ErrorAction SilentlyContinue
+        Restart-Service sshd -ErrorAction SilentlyContinue
         # jumpbox / fleet key -> admin logins use administrators_authorized_keys
         $akf = 'C:\ProgramData\ssh\administrators_authorized_keys'
         $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOsqdUWpUrTO6Qtv8Jq13QtHGcWLYgZzKLGcbtRcP+vu jumpbox-dashboard'
@@ -305,13 +315,6 @@ try {
             Add-Content -Path $akf -Value $pub -Encoding ascii
         }
         icacls $akf /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
-        # OpenSSH.Server FoD finalizes on the next reboot; register a one-shot SYSTEM
-        # startup task to set sshd Automatic + start it, then self-delete.
-        $taskCmd = 'Set-Service sshd -StartupType Automatic; Start-Service sshd; Unregister-ScheduledTask -TaskName Finalize-sshd -Confirm:$false'
-        $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -WindowStyle Hidden -Command "' + $taskCmd + '"')
-        $trg = New-ScheduledTaskTrigger -AtStartup
-        $prc = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        Register-ScheduledTask -TaskName 'Finalize-sshd' -Action $act -Trigger $trg -Principal $prc -Force | Out-Null
         Write-Host ("  sshd: " + (Get-Service sshd).Status + " / " + (Get-Service sshd).StartType) -ForegroundColor Green
     }
 
