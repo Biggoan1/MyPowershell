@@ -407,17 +407,20 @@ try {
             Write-Host "  WT settings fetch failed: $($_.Exception.Message) - skipped." -ForegroundColor Yellow
         }
 
-        # Per-user personalization for current user + the Default profile (future users):
-        #   - Windows dark mode (apps + system/taskbar)
+        # Per-user setup for current user + the Default profile (future users):
         #   - Default terminal application = Windows Terminal (Console\%%Startup delegation GUIDs)
+        #   - Desktop wallpaper = Windows dark default (img19.jpg)
+        # (Windows dark-MODE toggling intentionally left out - set it via the OS if wanted.)
         # reg.exe root: 'HKCU' for current user, 'HKU\DefProv' for the loaded Default hive.
+        $wallpaper = 'C:\Windows\Web\Wallpaper\Windows\img19.jpg'
         function Set-Personalization([string]$Root) {
-            $pers = "$Root\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-            reg add $pers /v AppsUseLightTheme    /t REG_DWORD /d 0 /f | Out-Null
-            reg add $pers /v SystemUsesLightTheme /t REG_DWORD /d 0 /f | Out-Null
             $cons = "$Root\Console\%%Startup"
             reg add $cons /v DelegationConsole  /t REG_SZ /d "{2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69}" /f | Out-Null
             reg add $cons /v DelegationTerminal /t REG_SZ /d "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}" /f | Out-Null
+            $desk = "$Root\Control Panel\Desktop"
+            reg add $desk /v Wallpaper      /t REG_SZ /d "C:\Windows\Web\Wallpaper\Windows\img19.jpg" /f | Out-Null
+            reg add $desk /v WallpaperStyle /t REG_SZ /d "10" /f | Out-Null
+            reg add $desk /v TileWallpaper  /t REG_SZ /d "0"  /f | Out-Null
         }
         Set-Personalization 'HKCU'
         $defHive = 'C:\Users\Default\NTUSER.DAT'
@@ -430,16 +433,15 @@ try {
             }
         }
 
-        # Broadcast the theme change so dark mode repaints now (no fresh login needed).
-        $sig = '[DllImport("user32.dll",SetLastError=true,CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd,uint Msg,UIntPtr wParam,string lParam,uint fuFlags,uint uTimeout,out UIntPtr lpdwResult);'
+        # Apply the wallpaper now for the current user (SPI_SETDESKWALLPAPER = 0x0014).
+        $sig = '[DllImport("user32.dll",SetLastError=true,CharSet=CharSet.Auto)] public static extern bool SystemParametersInfo(uint uiAction,uint uiParam,string pvParam,uint fWinIni);'
         try {
-            $u = Add-Type -MemberDefinition $sig -Name WinApi3b -Namespace Native -PassThru -ErrorAction Stop
-            [UIntPtr]$res = [UIntPtr]::Zero
-            $u::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'ImmersiveColorSet', 2, 5000, [ref]$res) | Out-Null
+            $u = Add-Type -MemberDefinition $sig -Name WinApiWp -Namespace Native -PassThru -ErrorAction Stop
+            $u::SystemParametersInfo(0x0014, 0, $wallpaper, 3) | Out-Null
         } catch { }
 
         $script:ExplorerDirty = $true
-        Write-Host 'Personalization applied: dark mode + WT default terminal.' -ForegroundColor Green
+        Write-Host 'Applied: WT default terminal + dark wallpaper.' -ForegroundColor Green
     }
 
     # ----- Phase 4: debloat -----
