@@ -277,21 +277,41 @@ try {
         }
     }
 
-    # ----- Phase 2b: OpenSSH Server (winget Win32-OpenSSH, not the slow WU FoD) + jumpbox key -----
+    # ----- Phase 2b: OpenSSH Server (Win32-OpenSSH GitHub zip, not the slow WU FoD) + jumpbox key -----
     if ($ConfigureOpenSSH) {
         Write-Host "`n=== Phase 2b: OpenSSH Server ===" -ForegroundColor White
-        # winget's Win32-OpenSSH downloads from GitHub (fast) and needs NO reboot, unlike the
-        # OpenSSH.Server FoD which pulls from Windows Update and stages for a restart.
-        Write-Host '  installing Microsoft.OpenSSH.Beta via winget ...'
-        & $WingetPath install --id Microsoft.OpenSSH.Beta -e --silent --source winget `
-            --accept-package-agreements --accept-source-agreements
-        # winget lays down the binaries but does NOT register the service - run install-sshd.ps1.
-        $sshdSetup = Join-Path $env:ProgramFiles 'OpenSSH\install-sshd.ps1'
+        # Pull the Win32-OpenSSH release zip straight from GitHub (~5MB, seconds) and register
+        # sshd with install-sshd.ps1. No winget package (none reliably exists), no Windows Update,
+        # no reboot. Config dir is still C:\ProgramData\ssh.
+        $osshDir = Join-Path $env:ProgramFiles 'OpenSSH'
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $zipUrl = $null
+        try {
+            $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/PowerShell/Win32-OpenSSH/releases/latest' `
+                     -UseBasicParsing -Headers @{ 'User-Agent' = 'fafolab-provision' } -TimeoutSec 30
+            $zipUrl = ($rel.assets | Where-Object { $_.name -eq 'OpenSSH-Win64.zip' } | Select-Object -First 1).browser_download_url
+        } catch { }
+        if (-not $zipUrl) { $zipUrl = 'https://github.com/PowerShell/Win32-OpenSSH/releases/latest/download/OpenSSH-Win64.zip' }
+        try {
+            Write-Host "  downloading Win32-OpenSSH: $zipUrl"
+            $zip = Join-Path $env:TEMP 'OpenSSH-Win64.zip'
+            Invoke-WebRequest -Uri $zipUrl -OutFile $zip -UseBasicParsing -TimeoutSec 120
+            $ex = Join-Path $env:TEMP 'osshx'
+            Remove-Item $ex -Recurse -Force -ErrorAction SilentlyContinue
+            Expand-Archive -Path $zip -DestinationPath $ex -Force
+            $inner = Get-ChildItem $ex -Directory | Select-Object -First 1   # OpenSSH-Win64\
+            New-Item -ItemType Directory -Path $osshDir -Force | Out-Null
+            Copy-Item (Join-Path $inner.FullName '*') $osshDir -Recurse -Force
+            Write-Host "  OpenSSH binaries -> $osshDir" -ForegroundColor Green
+        } catch {
+            Write-Host "  OpenSSH download/extract FAILED: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+        $sshdSetup = Join-Path $osshDir 'install-sshd.ps1'
         if (Test-Path $sshdSetup) {
             & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $sshdSetup | Out-Null
             Write-Host '  sshd service registered (install-sshd.ps1)' -ForegroundColor Green
         } else {
-            Write-Host '  install-sshd.ps1 not found - winget OpenSSH install may have failed.' -ForegroundColor Yellow
+            Write-Host '  install-sshd.ps1 not found - OpenSSH download may have failed.' -ForegroundColor Yellow
         }
         Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
         # default shell -> Windows PowerShell
