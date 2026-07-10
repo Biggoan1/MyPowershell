@@ -407,24 +407,45 @@ try {
             Write-Host "  WT settings fetch failed: $($_.Exception.Message) - skipped." -ForegroundColor Yellow
         }
 
-        # Windows dark mode (apps + system/taskbar) for current user + Default profile.
-        function Set-DarkTheme([string]$Root) {
-            $k = "$Root\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-            reg add $k /v AppsUseLightTheme    /t REG_DWORD /d 0 /f | Out-Null
-            reg add $k /v SystemUsesLightTheme /t REG_DWORD /d 0 /f | Out-Null
+        # Per-user personalization for current user + the Default profile (future users):
+        #   - Windows dark mode (apps + system/taskbar)
+        #   - Default terminal application = Windows Terminal (Console\%%Startup delegation GUIDs)
+        # reg.exe root: 'HKCU' for current user, 'HKU\DefProv' for the loaded Default hive.
+        function Set-Personalization([string]$Root) {
+            $pers = "$Root\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+            reg add $pers /v AppsUseLightTheme    /t REG_DWORD /d 0 /f | Out-Null
+            reg add $pers /v SystemUsesLightTheme /t REG_DWORD /d 0 /f | Out-Null
+            $cons = "$Root\Console\%%Startup"
+            reg add $cons /v DelegationConsole  /t REG_SZ /d "{2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69}" /f | Out-Null
+            reg add $cons /v DelegationTerminal /t REG_SZ /d "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}" /f | Out-Null
         }
-        Set-DarkTheme 'HKCU'
+        Set-Personalization 'HKCU'
         $defHive = 'C:\Users\Default\NTUSER.DAT'
         if (Test-Path $defHive) {
             reg load 'HKU\DefProv' $defHive | Out-Null
             if ($LASTEXITCODE -eq 0) {
-                Set-DarkTheme 'HKU\DefProv'
+                Set-Personalization 'HKU\DefProv'
                 [gc]::Collect(); Start-Sleep -Milliseconds 500
                 reg unload 'HKU\DefProv' | Out-Null
             }
         }
+
+        # Broadcast the theme change so dark mode repaints now (no fresh login needed).
+        $sig = '[DllImport("user32.dll",SetLastError=true,CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd,uint Msg,UIntPtr wParam,string lParam,uint fuFlags,uint uTimeout,out UIntPtr lpdwResult);'
+        try {
+            $u = Add-Type -MemberDefinition $sig -Name WinApi3b -Namespace Native -PassThru -ErrorAction Stop
+            [UIntPtr]$res = [UIntPtr]::Zero
+            $u::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'ImmersiveColorSet', 2, 5000, [ref]$res) | Out-Null
+        } catch { }
+
+        # Pin Windows Terminal to Start (Win11 "Configure Start pins" policy, machine-wide).
+        # NOTE: this policy defines the FULL pinned list and locks it; edit the JSON to add apps.
+        $startPins = '{"pinnedList":[{"packagedAppId":"Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"}]}'
+        New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer' -Force | Out-Null
+        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer' -Name 'ConfigureStartPins' -Value $startPins
+
         $script:ExplorerDirty = $true
-        Write-Host 'Windows Terminal settings + dark theme applied.' -ForegroundColor Green
+        Write-Host 'Personalization applied: dark mode + WT default terminal + WT Start pin.' -ForegroundColor Green
     }
 
     # ----- Phase 4: debloat -----
