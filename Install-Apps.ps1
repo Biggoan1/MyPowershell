@@ -446,14 +446,17 @@ try {
     if ($RunDebloat) {
         Write-Host "`n=== Phase 4: debloat ===" -ForegroundColor White
 
+        # Apps to KEEP; everything else (incl. Bing*, Xbox*, Teams, Widgets, DevHome,
+        # YourPhone, Solitaire, QuickAssist, CrossDevice, new Outlook, ...) gets removed.
         $WhiteListedApps = @(
-            'Microsoft.DesktopAppInstaller','Microsoft.MSPaint','Microsoft.Windows.Photos',
-            'Microsoft.StorePurchaseApp','Microsoft.MicrosoftStickyNotes','Microsoft.WindowsAlarms',
-            'Microsoft.WindowsCalculator','Microsoft.WindowsSoundRecorder','Microsoft.WindowsStore',
-            'Windows.Client.ShellComponents','Microsoft.PowerAutomateDesktop','Microsoft.RawImageExtension',
-            'Microsoft.WindowsNotepad','Microsoft.Terminal','Microsoft.ScreenSketch',
-            'Microsoft.HEIFImageExtension','Microsoft.VP9VideoExtensions','Microsoft.WebMediaExtensions',
-            'Microsoft.WebpImageExtension','*CrossDevice*'
+            'Microsoft.DesktopAppInstaller','Microsoft.WindowsStore','Microsoft.StorePurchaseApp',
+            'Microsoft.WindowsTerminal','Microsoft.WindowsNotepad','Microsoft.Paint',
+            'Microsoft.ScreenSketch','Microsoft.WindowsCalculator','Microsoft.Windows.Photos',
+            'Microsoft.WindowsSoundRecorder','Microsoft.SecHealthUI','Microsoft.MicrosoftEdge.Stable',
+            'Microsoft.ApplicationCompatibilityEnhancements',
+            'Microsoft.HEIFImageExtension','Microsoft.HEVCVideoExtension','Microsoft.VP9VideoExtensions',
+            'Microsoft.WebMediaExtensions','Microsoft.WebpImageExtension','Microsoft.RawImageExtension',
+            'Microsoft.AV1VideoExtension','Microsoft.AVCEncoderVideoExtension','Microsoft.MPEG2VideoExtension'
         )
         function Test-Whitelisted {
             param([string]$Name)
@@ -462,27 +465,19 @@ try {
         }
 
         Write-Host '--- Appx packages ---'
-        $provisionedMap = @{}
-        foreach ($p in (Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue)) {
-            $provisionedMap[$p.DisplayName] = $p.PackageName
+        # Iterate the PROVISIONED list directly so bloat is stripped from the image (new
+        # users) and before it finishes installing for the current user. The old loop only
+        # touched already-installed bundles, which on first-logon missed almost everything.
+        foreach ($pp in (Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue)) {
+            if (Test-Whitelisted $pp.DisplayName) { continue }
+            Remove-AppxProvisionedPackage -Online -PackageName $pp.PackageName -ErrorAction SilentlyContinue | Out-Null
+            if ($?) { Write-Host "  removed provisioned:  $($pp.DisplayName)" }
+            else    { Write-Host "  skip (not removable): $($pp.DisplayName)" -ForegroundColor DarkGray }
         }
-        $bundles = Get-AppxPackage -PackageTypeFilter Bundle -AllUsers -ErrorAction SilentlyContinue |
-            Sort-Object Name -Unique
-        foreach ($app in $bundles) {
-            if (Test-Whitelisted $app.Name) { Write-Host "  skip (whitelisted): $($app.Name)"; continue }
-
-            $pkg = Get-AppxPackage -Name $app.Name -AllUsers -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($pkg) {
-                Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction SilentlyContinue
-                if ($?) { Write-Host "  removed Appx:          $($pkg.PackageFullName)" }
-                else    { Write-Host "  skip Appx (locked):    $($app.Name)" -ForegroundColor DarkGray }
-            }
-            $provName = $provisionedMap[$app.Name]
-            if ($provName) {
-                Remove-AppxProvisionedPackage -Online -PackageName $provName -ErrorAction SilentlyContinue | Out-Null
-                if ($?) { Write-Host "  removed Provisioned:   $provName" }
-                else    { Write-Host "  skip Provisioned (stub/not removable): $($app.Name)" -ForegroundColor DarkGray }
-            }
+        # Also strip any already-installed instances (all users).
+        foreach ($app in (Get-AppxPackage -PackageTypeFilter Bundle -AllUsers -ErrorAction SilentlyContinue | Sort-Object Name -Unique)) {
+            if (Test-Whitelisted $app.Name) { continue }
+            Get-AppxPackage -Name $app.Name -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
         }
 
         Write-Host '--- Features on Demand ---'
