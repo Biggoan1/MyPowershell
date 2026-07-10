@@ -30,6 +30,7 @@ $Apps = @(
 #    'Greenshot.Greenshot'
     'Microsoft.PowerShell'
     'Microsoft.Sysinternals.ProcessMonitor'
+    'Microsoft.Terminal'
     'AdamGell.CMTraceOpen'
 #    'Telegram.TelegramDesktop'
 #    'Git.Git'
