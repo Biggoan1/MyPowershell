@@ -46,6 +46,8 @@ $RunDebloat            = $true
 $ConfigureOpenSSH      = $true
 $AssociateCMTraceLogs  = $true
 $RebootWhenDone        = $true
+$ApplyTerminalAndTheme = $true
+$TerminalSettingsUrl   = 'https://raw.githubusercontent.com/Biggoan1/MyPowershell/main/WindowsTerminal/settings.json'
 
 # First-logon fires before the NIC has DHCP/DNS/internet and before winget's
 # source is reachable, so wait for real connectivity before the download phases.
@@ -352,6 +354,53 @@ try {
 
         $script:ExplorerDirty = $true
         Write-Host 'Explorer preferences applied.' -ForegroundColor Green
+    }
+
+    # ----- Phase 3b: Windows Terminal settings + Windows dark theme -----
+    if ($ApplyTerminalAndTheme) {
+        Write-Host "`n=== Phase 3b: Windows Terminal + dark theme ===" -ForegroundColor White
+
+        # Seed Windows Terminal settings.json (pulled from the repo) for the current
+        # admin AND the Default user profile so future users inherit it.
+        $wtPkg = 'Microsoft.WindowsTerminal_8wekyb3d8bbwe'
+        $wtTargets = @(
+            (Join-Path $env:LOCALAPPDATA "Packages\$wtPkg\LocalState"),
+            "C:\Users\Default\AppData\Local\Packages\$wtPkg\LocalState"
+        )
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $wt = Invoke-WebRequest -Uri $TerminalSettingsUrl -UseBasicParsing -TimeoutSec 30
+            if ($wt.Content -and $wt.Content.Length -gt 50) {
+                foreach ($t in $wtTargets) {
+                    New-Item -ItemType Directory -Path $t -Force | Out-Null
+                    [IO.File]::WriteAllText((Join-Path $t 'settings.json'), $wt.Content)
+                    Write-Host "  WT settings -> $t" -ForegroundColor Green
+                }
+            } else {
+                Write-Host '  WT settings download empty - skipped.' -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "  WT settings fetch failed: $($_.Exception.Message) - skipped." -ForegroundColor Yellow
+        }
+
+        # Windows dark mode (apps + system/taskbar) for current user + Default profile.
+        function Set-DarkTheme([string]$Root) {
+            $k = "$Root\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+            reg add $k /v AppsUseLightTheme    /t REG_DWORD /d 0 /f | Out-Null
+            reg add $k /v SystemUsesLightTheme /t REG_DWORD /d 0 /f | Out-Null
+        }
+        Set-DarkTheme 'HKCU'
+        $defHive = 'C:\Users\Default\NTUSER.DAT'
+        if (Test-Path $defHive) {
+            reg load 'HKU\DefProv' $defHive | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Set-DarkTheme 'HKU\DefProv'
+                [gc]::Collect(); Start-Sleep -Milliseconds 500
+                reg unload 'HKU\DefProv' | Out-Null
+            }
+        }
+        $script:ExplorerDirty = $true
+        Write-Host 'Windows Terminal settings + dark theme applied.' -ForegroundColor Green
     }
 
     # ----- Phase 4: debloat -----
