@@ -26,7 +26,7 @@ $Apps = @(
     'RedHat.VirtIO'
     '7zip.7zip'
     'Notepad++.Notepad++'
-    'Microsoft.PowerToys'
+#    'Microsoft.PowerToys'
 #    'Greenshot.Greenshot'
     'Microsoft.PowerShell'
     'Microsoft.Sysinternals.ProcessMonitor'
