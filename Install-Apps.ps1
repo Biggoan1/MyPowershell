@@ -37,7 +37,7 @@ $Apps = @(
 
 # Flip any phase off without deleting code.
 $InstallApps           = $true
-$InstallNodeAndClaude  = $true
+$InstallNodeAndClaude  = $false
 $SetHighPerformance    = $true
 $SetExecutionPolicy    = $true
 $ExplorerTweaks        = $true
@@ -365,7 +365,7 @@ try {
             'Windows.Client.ShellComponents','Microsoft.PowerAutomateDesktop','Microsoft.RawImageExtension',
             'Microsoft.WindowsNotepad','Microsoft.Terminal','Microsoft.ScreenSketch',
             'Microsoft.HEIFImageExtension','Microsoft.VP9VideoExtensions','Microsoft.WebMediaExtensions',
-            'Microsoft.WebpImageExtension','*OutlookForWindows*','*CrossDevice*'
+            'Microsoft.WebpImageExtension','*CrossDevice*'
         )
         function Test-Whitelisted {
             param([string]$Name)
