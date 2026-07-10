@@ -438,14 +438,8 @@ try {
             $u::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'ImmersiveColorSet', 2, 5000, [ref]$res) | Out-Null
         } catch { }
 
-        # Pin Windows Terminal to Start (Win11 "Configure Start pins" policy, machine-wide).
-        # NOTE: this policy defines the FULL pinned list and locks it; edit the JSON to add apps.
-        $startPins = '{"pinnedList":[{"packagedAppId":"Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"}]}'
-        New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer' -Force | Out-Null
-        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer' -Name 'ConfigureStartPins' -Value $startPins
-
         $script:ExplorerDirty = $true
-        Write-Host 'Personalization applied: dark mode + WT default terminal + WT Start pin.' -ForegroundColor Green
+        Write-Host 'Personalization applied: dark mode + WT default terminal.' -ForegroundColor Green
     }
 
     # ----- Phase 4: debloat -----
