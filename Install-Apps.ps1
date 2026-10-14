@@ -36,6 +36,14 @@ $Apps = @(
     'Git.Git'
 )
 
+# Extra winget arguments for specific apps.
+# PowerShell 7.6+ defaults to an MSIX package, which is registered for ONE user and then
+# stripped by the Phase 4 debloat. Force the classic MSI instead: machine-wide, into
+# C:\Program Files\PowerShell\7, for every user.
+$WingetExtraArgs = @{
+    'Microsoft.PowerShell' = @('--installer-type', 'wix', '--scope', 'machine')
+}
+
 # Flip any phase off without deleting code.
 $InstallApps           = $true
 $InstallNodeAndClaude  = $false
@@ -55,7 +63,7 @@ $TerminalSettingsUrl   = 'https://raw.githubusercontent.com/Biggoan1/MyPowershel
 # Wi-Fi profiles staged in C:\Windows\Setup\Scripts\Wifi (WipeBench CustomJohn builds).
 $NetworkWaitMinutes    = 15
 
-$Version = '1.3'
+$Version = '1.4'
 $LogFile = 'C:\Distrib\Logs\Install-Apps.log'
 $RegPath = 'HKLM:\SOFTWARE\FAFOLAB\Provisioning'
 
@@ -91,8 +99,10 @@ function Install-WingetApp {
     Write-Host "  installing $Id ..." -ForegroundColor Cyan
     # --source winget: force the community source; the msstore source throws a cert
     # error (0x8a15005e) on fresh images and tanks the whole command.
+    $extra = @()
+    if ($WingetExtraArgs.ContainsKey($Id)) { $extra = $WingetExtraArgs[$Id] }
     & $WingetPath install --id $Id -e --silent --source winget `
-        --accept-package-agreements --accept-source-agreements
+        --accept-package-agreements --accept-source-agreements @extra
     $code = $LASTEXITCODE
 
     $ok = $BenignWingetCodes -contains $code
@@ -471,7 +481,7 @@ try {
         # YourPhone, Solitaire, QuickAssist, CrossDevice, new Outlook, ...) gets removed.
         $WhiteListedApps = @(
             'Microsoft.DesktopAppInstaller','Microsoft.WindowsStore','Microsoft.StorePurchaseApp',
-            'Microsoft.WindowsTerminal','Microsoft.WindowsNotepad','Microsoft.Paint',
+            'Microsoft.WindowsTerminal','Microsoft.PowerShell','Microsoft.WindowsNotepad','Microsoft.Paint',
             'Microsoft.ScreenSketch','Microsoft.WindowsCalculator','Microsoft.Windows.Photos',
             'Microsoft.WindowsSoundRecorder','Microsoft.SecHealthUI','Microsoft.MicrosoftEdge.Stable',
             'Microsoft.ApplicationCompatibilityEnhancements',
