@@ -36,6 +36,14 @@ $Apps = @(
     'Git.Git'
 )
 
+# Per-app install conditions (scriptblock -> $true/$false). An app with no entry always installs.
+# RedHat.VirtIO = the virtio guest drivers + QEMU guest agent: pointless and noisy on bare metal,
+# so only on a VM that actually exposes virtio devices (Proxmox/KVM report Manufacturer QEMU and
+# PCI vendor 1AF4). Add more here if an app is ever hardware-specific.
+$AppConditions = @{
+    'RedHat.VirtIO' = { Test-VirtioVm }
+}
+
 # Extra winget arguments for specific apps.
 # PowerShell 7.6+ defaults to an MSIX package, which is registered for ONE user and then
 # stripped by the Phase 4 debloat. Force the classic MSI instead: machine-wide, into
@@ -102,6 +110,14 @@ function Resolve-Winget {
     $exe = Get-ChildItem "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue |
         Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
     return $exe
+}
+
+function Test-VirtioVm {
+    # True on a QEMU/KVM guest (Proxmox VMs: Manufacturer "QEMU") or when any VirtIO PCI device
+    # (vendor 1AF4) is present - covers other hypervisors that present virtio hardware.
+    try { if ((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).Manufacturer -match 'QEMU') { return $true } } catch { }
+    try { if (@(Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -like 'PCI\VEN_1AF4*' }).Count -gt 0) { return $true } } catch { }
+    return $false
 }
 
 function Install-WingetApp {
@@ -278,7 +294,13 @@ try {
     # ----- Phase 1: winget apps -----
     if ($InstallApps) {
         Write-Host "`n=== Phase 1: winget apps ===" -ForegroundColor White
-        foreach ($id in $Apps) { Install-WingetApp -WingetPath $WingetPath -Id $id }
+        foreach ($id in $Apps) {
+            if ($AppConditions.ContainsKey($id) -and -not (& $AppConditions[$id])) {
+                Write-Host "  skipping $id (condition not met on this machine)" -ForegroundColor DarkGray
+                continue
+            }
+            Install-WingetApp -WingetPath $WingetPath -Id $id
+        }
     }
 
     # ----- Phase 1b: CMTrace Open -> default .log viewer -----
