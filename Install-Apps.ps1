@@ -32,6 +32,7 @@ $Apps = @(
     'Microsoft.Sysinternals.ProcessMonitor'
     'Microsoft.Terminal'
     'AdamGell.CMTraceOpen'
+    'WireGuard.WireGuard'
     'Git.Git'
 )
 
@@ -45,6 +46,7 @@ $WingetExtraArgs = @{
 
 # Flip any phase off without deleting code.
 $InstallApps           = $true
+$ProvisionTerminal     = $true   # Windows Terminal for ALL users (winget only installs it for the current one)
 $InstallNodeAndClaude  = $false
 $SetHighPerformance    = $true
 $SetExecutionPolicy    = $true
@@ -177,6 +179,48 @@ function Wait-ForInternet {
 
 # ============================ MAIN ============================
 
+function Install-TerminalMachineWide {
+    # winget installs Windows Terminal for the CURRENT user only; a new profile on the same box has
+    # no Terminal (John had to install it by hand on DESKTOP-UK6FVSU, 2026-10-24). Provision the same
+    # MSIX bundle machine-wide from the release's PreinstallKit (bundle + framework deps + license -
+    # the kit exists exactly for Add-AppxProvisionedPackage), so every future logon gets it.
+    # The tag comes from the /releases/latest redirect (no API rate limit); the API is the fallback.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $tag = $null
+    try {
+        $r = Invoke-WebRequest -Uri 'https://github.com/microsoft/terminal/releases/latest' -UseBasicParsing -MaximumRedirection 0 -ErrorAction SilentlyContinue
+        $loc = if ($r) { $r.Headers.Location } else { $null }
+        if ($loc -match '/tag/(v[0-9.]+)$') { $tag = $Matches[1] }
+    } catch { $loc = $_.Exception.Response.Headers['Location']; if ($loc -match '/tag/(v[0-9.]+)$') { $tag = $Matches[1] } }
+    if (-not $tag) {
+        try {
+            $rel = @(Invoke-RestMethod -Uri 'https://api.github.com/repos/microsoft/terminal/releases?per_page=10' -UseBasicParsing -Headers @{ 'User-Agent' = 'fafolab-provision' } -TimeoutSec 30) |
+                   Where-Object { $_.tag_name -and -not $_.prerelease -and $_.tag_name -notmatch 'preview' } | Select-Object -First 1
+            $tag = $rel.tag_name
+        } catch { }
+    }
+    if (-not $tag) { throw 'could not resolve the latest Windows Terminal release' }
+    $ver  = $tag.TrimStart('v')
+    $name = "Microsoft.WindowsTerminal_${ver}_8wekyb3d8bbwe.msixbundle_Windows10_PreinstallKit.zip"
+    $url  = "https://github.com/microsoft/terminal/releases/download/$tag/$name"
+    $work = Join-Path $env:TEMP 'wt-preinstall'; Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory $work -Force | Out-Null
+    $zip  = Join-Path $work $name
+    Write-Host "  downloading $name ..."
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 300
+    Expand-Archive -Path $zip -DestinationPath $work -Force
+    $bundle = Get-ChildItem $work -Filter '*.msixbundle' | Select-Object -First 1
+    $deps   = @(Get-ChildItem $work -Include '*.appx','*.msix' -Recurse -File | Where-Object { $_.Name -notlike 'Microsoft.WindowsTerminal*' } | ForEach-Object FullName)
+    $lic    = Get-ChildItem $work -Filter '*.xml' | Select-Object -First 1
+    $p = @{ Online = $true; PackagePath = $bundle.FullName }
+    if ($deps.Count) { $p.DependencyPackagePath = $deps }
+    if ($lic) { $p.LicensePath = $lic.FullName } else { $p.SkipLicense = $true }
+    Add-AppxProvisionedPackage @p | Out-Null
+    Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+    $pp = Get-AppxProvisionedPackage -Online | Where-Object DisplayName -eq 'Microsoft.WindowsTerminal'
+    if (-not $pp) { throw 'Terminal is still not provisioned after Add-AppxProvisionedPackage' }
+    Write-Host "  provisioned for all users: Microsoft.WindowsTerminal $($pp.Version)" -ForegroundColor Green
+}
+
 try {
     Write-Host ("=== Provisioning v{0} starting ===" -f $Version) -ForegroundColor White
 
@@ -262,6 +306,12 @@ try {
         } else {
             Write-Host '  CMTrace Open exe not found (winget install may have failed) - skipped.' -ForegroundColor Yellow
         }
+    }
+
+    # ----- Phase 1c: Windows Terminal for all users -----
+    if ($ProvisionTerminal) {
+        Write-Host "`n=== Phase 1c: Windows Terminal (machine-wide) ===" -ForegroundColor White
+        try { Install-TerminalMachineWide } catch { Write-Host "  Terminal provisioning failed: $($_.Exception.Message) (current user still has the winget copy)" -ForegroundColor Yellow }
     }
 
     # ----- Phase 2: Node.js LTS + Claude Code -----
