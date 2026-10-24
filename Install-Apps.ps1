@@ -32,6 +32,7 @@ $Apps = @(
     'Microsoft.Sysinternals.ProcessMonitor'
     'Microsoft.Terminal'
     'AdamGell.CMTraceOpen'
+    'WireGuard.WireGuard'
 #    'Telegram.TelegramDesktop'
 #    'Git.Git'
 )
