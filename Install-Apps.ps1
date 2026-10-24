@@ -32,8 +32,16 @@ $Apps = @(
     'Microsoft.Sysinternals.ProcessMonitor'
     'Microsoft.Terminal'
     'AdamGell.CMTraceOpen'
-#    'Git.Git'
+    'Git.Git'
 )
+
+# Extra winget arguments for specific apps.
+# PowerShell 7.6+ defaults to an MSIX package, which is registered for ONE user and then
+# stripped by the Phase 4 debloat. Force the classic MSI instead: machine-wide, into
+# C:\Program Files\PowerShell\7, for every user.
+$WingetExtraArgs = @{
+    'Microsoft.PowerShell' = @('--installer-type', 'wix', '--scope', 'machine')
+}
 
 # Flip any phase off without deleting code.
 $InstallApps           = $true
@@ -59,11 +67,12 @@ $UserApps = @(
 $UserAppsVersion = '1'
 $TerminalSettingsUrl   = 'https://raw.githubusercontent.com/Biggoan1/MyPowershell/main/WindowsTerminal/settings.json'
 
-# First-logon fires before the NIC has DHCP/DNS/internet and before winget's
-# source is reachable, so wait for real connectivity before the download phases.
-$WaitForNetworkSecs    = 180
+# How long to wait for real internet before the online phases (winget, Node/Claude).
+# Offline after this = those phases are skipped and the rest still runs. Also re-kicks any
+# Wi-Fi profiles staged in C:\Windows\Setup\Scripts\Wifi (WipeBench CustomJohn builds).
+$NetworkWaitMinutes    = 15
 
-$Version = '1.2'
+$Version = '1.4'
 $LogFile = 'C:\Distrib\Logs\Install-Apps.log'
 $RegPath = 'HKLM:\SOFTWARE\FAFOLAB\Provisioning'
 
@@ -99,8 +108,10 @@ function Install-WingetApp {
     Write-Host "  installing $Id ..." -ForegroundColor Cyan
     # --source winget: force the community source; the msstore source throws a cert
     # error (0x8a15005e) on fresh images and tanks the whole command.
+    $extra = @()
+    if ($WingetExtraArgs.ContainsKey($Id)) { $extra = $WingetExtraArgs[$Id] }
     & $WingetPath install --id $Id -e --silent --source winget `
-        --accept-package-agreements --accept-source-agreements
+        --accept-package-agreements --accept-source-agreements @extra
     $code = $LASTEXITCODE
 
     $ok = $BenignWingetCodes -contains $code
@@ -132,26 +143,36 @@ function Set-ExplorerPrefs {
     reg add $key /v LaunchTo        /t REG_DWORD /d 1 /f | Out-Null  # open Explorer to This PC
 }
 
-function Wait-ForNetwork {
-    # First-logon runs before the NIC has DHCP/DNS/internet + before winget's
-    # source is reachable. Poll for REAL connectivity (ping + DNS resolve) instead
-    # of a blind sleep. Returns $true once online, $false on timeout.
-    param([int]$TimeoutSec = 180)
-    Write-Host "`n=== Waiting for internet connectivity (up to $TimeoutSec s) ===" -ForegroundColor White
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        $ping = Test-Connection -ComputerName 8.8.8.8 -Count 1 -Quiet -ErrorAction SilentlyContinue
-        $dns  = $false
-        try { if (Resolve-DnsName -Name 'www.microsoft.com' -ErrorAction Stop) { $dns = $true } } catch {}
-        if ($ping -and $dns) {
-            Write-Host 'Internet is up.' -ForegroundColor Green
-            Start-Sleep -Seconds 3   # brief settle so winget's source is reachable
-            return $true
+function Wait-ForInternet {
+    # Real internet, not just "a link": the same probe Windows' own NCSI uses. A captive
+    # portal or a DHCP lease without a route fails this, which is exactly what winget needs.
+    param([int]$Minutes = 15)
+    $wifiDir = 'C:\Windows\Setup\Scripts\Wifi'
+    $profiles = @(Get-ChildItem "$wifiDir\*.xml" -ErrorAction SilentlyContinue)
+    $names = @(foreach ($p in $profiles) {
+        # unattend already imported these; re-adding is idempotent and covers a run by hand
+        netsh wlan add profile filename="$($p.FullName)" user=all | Out-Null
+        try { ([xml](Get-Content $p.FullName)).WLANProfile.name } catch { }
+    })
+    $deadline = (Get-Date).AddMinutes($Minutes)
+    $lastKick = [datetime]::MinValue
+    $online = $false
+    while ($true) {
+        try {
+            $r = Invoke-WebRequest -Uri 'http://www.msftconnecttest.com/connecttest.txt' -UseBasicParsing -TimeoutSec 5
+            if ($r.Content -eq 'Microsoft Connect Test') { $online = $true; break }
+        } catch { }
+        if ((Get-Date) -ge $deadline) { break }
+        if ($names -and ((Get-Date) - $lastKick).TotalSeconds -ge 30) {
+            foreach ($n in $names) { netsh wlan connect name="$n" | Out-Null }
+            $lastKick = Get-Date
         }
-        Start-Sleep -Seconds 5
+        Write-Host ("  no internet yet - waiting ({0:mm\:ss} left) ..." -f ($deadline - (Get-Date))) -ForegroundColor DarkGray
+        Start-Sleep -Seconds 10
     }
-    Write-Host "No internet after $TimeoutSec s - continuing anyway (downloads may fail)." -ForegroundColor Yellow
-    return $false
+    # The profile copies hold the key in plaintext; Windows keeps its own (protected) copy.
+    if ($profiles) { Remove-Item $wifiDir -Recurse -Force -ErrorAction SilentlyContinue }
+    return $online
 }
 
 # ============================ MAIN ============================
@@ -187,8 +208,16 @@ try {
         }
     }
 
-    # Don't touch the internet until the NIC is actually up.
-    Wait-ForNetwork -TimeoutSec $WaitForNetworkSecs | Out-Null
+    # ----- Network: winget and npm need the internet; wait for it -----
+    Write-Host "`n=== Network: waiting for an internet connection ===" -ForegroundColor White
+    if (Wait-ForInternet -Minutes $NetworkWaitMinutes) {
+        Write-Host 'Internet OK.' -ForegroundColor Green
+    } else {
+        Write-Host ("NO INTERNET after {0} min - skipping winget apps and Node/Claude." -f $NetworkWaitMinutes) -ForegroundColor Red
+        Write-Host "  Connect the box, then rerun: powershell -ExecutionPolicy Bypass -File $PSCommandPath" -ForegroundColor Yellow
+        $InstallApps = $false
+        $InstallNodeAndClaude = $false
+    }
 
     $WingetPath = Resolve-Winget
     if (-not $WingetPath) {
@@ -461,7 +490,7 @@ try {
         # YourPhone, Solitaire, QuickAssist, CrossDevice, new Outlook, ...) gets removed.
         $WhiteListedApps = @(
             'Microsoft.DesktopAppInstaller','Microsoft.WindowsStore','Microsoft.StorePurchaseApp',
-            'Microsoft.WindowsTerminal','Microsoft.WindowsNotepad','Microsoft.Paint',
+            'Microsoft.WindowsTerminal','Microsoft.PowerShell','Microsoft.WindowsNotepad','Microsoft.Paint',
             'Microsoft.ScreenSketch','Microsoft.WindowsCalculator','Microsoft.Windows.Photos',
             'Microsoft.WindowsSoundRecorder','Microsoft.SecHealthUI','Microsoft.MicrosoftEdge.Stable',
             'Microsoft.ApplicationCompatibilityEnhancements',
