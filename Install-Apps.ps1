@@ -32,7 +32,6 @@ $Apps = @(
     'Microsoft.Sysinternals.ProcessMonitor'
     'Microsoft.Terminal'
     'AdamGell.CMTraceOpen'
-#    'Telegram.TelegramDesktop'
 #    'Git.Git'
 )
 
@@ -48,6 +47,16 @@ $ConfigureOpenSSH      = $true
 $AssociateCMTraceLogs  = $true
 $RebootWhenDone        = $true
 $ApplyTerminalAndTheme = $true
+$InstallUserAppsAtLogon = $true   # per-user winget apps via Active Setup (runs once per user at logon)
+
+# Per-USER apps (installers that only know how to install into %LOCALAPPDATA%, e.g. Signal's NSIS).
+# These cannot be installed once for the machine, so Install-UserApps.ps1 is dropped into C:\Distrib\Scripts
+# and registered in Active Setup: every user (incl. ones created later) gets them at their first logon,
+# and the current (provisioning) user gets them right now. Bump $UserAppsVersion to re-run for everyone.
+$UserApps = @(
+    'OpenWhisperSystems.Signal'      # Signal Desktop - the lab's chat channel (Telegram retired 2026-10-14)
+)
+$UserAppsVersion = '1'
 $TerminalSettingsUrl   = 'https://raw.githubusercontent.com/Biggoan1/MyPowershell/main/WindowsTerminal/settings.json'
 
 # First-logon fires before the NIC has DHCP/DNS/internet and before winget's
@@ -507,6 +516,55 @@ try {
             Write-Host "Listing FoD failed: $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
+
+# ---------------------------------------------------------------------------
+# PER-USER APPS AT LOGON (Active Setup)  - added 2026-10-14
+# ---------------------------------------------------------------------------
+if ($InstallUserAppsAtLogon -and $UserApps.Count -gt 0) {
+    Write-Host "`n== Per-user apps at logon (Active Setup) ==" -ForegroundColor Cyan
+    $uaDir = 'C:\Distrib\Scripts'; New-Item -ItemType Directory -Path $uaDir -Force | Out-Null
+    $uaScript = Join-Path $uaDir 'Install-UserApps.ps1'
+    $uaBody = @'
+# Install-UserApps.ps1 - runs ONCE per user at logon (Active Setup) in the USER's context.
+# Installs per-user winget apps. Written by Install-Apps.ps1; the app list is the $Ids line below.
+$Ids = @(__IDS__)
+$Log = "C:\Distrib\Logs\UserApps-$env:USERNAME.log"
+New-Item -ItemType Directory -Path (Split-Path $Log) -Force -ErrorAction SilentlyContinue | Out-Null
+function L($m) { "$(Get-Date -f 'yyyy-MM-dd HH:mm:ss') $m" | Out-File $Log -Append }
+L "start as $env:USERNAME; apps: $($Ids -join ', ')"
+# winget appears for a NEW user only after App Installer registers itself - wait up to 2 min.
+$w = $null
+for ($i = 0; $i -lt 24 -and -not $w; $i++) {
+    $w = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+    if (-not $w) { $p = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+        if ($p -and $p.InstallLocation -and (Test-Path (Join-Path $p.InstallLocation 'winget.exe'))) { $w = Join-Path $p.InstallLocation 'winget.exe' } }
+    if (-not $w) { Start-Sleep 5 }
+}
+if (-not $w) { L 'winget not available for this user - giving up'; exit 1 }
+$rc = 0
+foreach ($id in $Ids) {
+    & $w install --id $id --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity 2>&1 | Out-File $Log -Append
+    $e = $LASTEXITCODE; if ($e -eq -1978335212 -or $e -eq -1978335189) { $e = 0 }   # already installed / no update
+    L "$id -> exit $e"; if ($e -ne 0) { $rc = 1 }
+}
+Start-Sleep 3; Get-Process Signal -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq (Get-Process -Id $PID).SessionId } | Stop-Process -Force -ErrorAction SilentlyContinue   # Signal's installer launches the app
+L "done rc=$rc"; exit $rc
+'@
+    $uaBody = $uaBody.Replace('__IDS__', (($UserApps | ForEach-Object { "'$_'" }) -join ','))
+    Set-Content -Path $uaScript -Value $uaBody -Encoding UTF8
+    # Active Setup: HKLM component with a version; each user's HKCU copy is compared at logon and the
+    # StubPath runs once per user when behind. Bump $UserAppsVersion to re-run for everyone.
+    $asKey = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{FAFOLAB-UserApps}'
+    New-Item -Path $asKey -Force | Out-Null
+    Set-ItemProperty $asKey -Name '(Default)' -Value 'FAFOLAB per-user apps (Signal)'
+    Set-ItemProperty $asKey -Name 'StubPath' -Value "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$uaScript`""
+    Set-ItemProperty $asKey -Name 'Version'  -Value $UserAppsVersion
+    Set-ItemProperty $asKey -Name 'IsInstalled' -Value 1 -Type DWord
+    Write-Host "  Active Setup component registered (v$UserAppsVersion) -> $uaScript" -ForegroundColor Green
+    # Run it for the current user now too.
+    & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $uaScript
+    Write-Host "  current user run exit $LASTEXITCODE (log C:\Distrib\Logs\UserApps-$env:USERNAME.log)" -ForegroundColor Green
+}
 
     # ----- Detection marker -----
     if (-not (Test-Path $RegPath)) { New-Item -Path $RegPath -Force | Out-Null }
